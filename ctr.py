@@ -82,7 +82,7 @@ def runCTR(initRDD, maxIter, regParam):
     """
     SEED = 42
     df = spark.createDataFrame(initRDD, FIELDS)
-    # training, validation = df.randomSplit([0.75, 0.25], SEED)
+    training, validation = df.randomSplit([0.75, 0.25], SEED)
 
     c9_indexer = StringIndexer(inputCol="C9", outputCol="C9Indexed")
     c17_indexer = StringIndexer(inputCol="C17", outputCol="C17Indexed")
@@ -101,36 +101,39 @@ def runCTR(initRDD, maxIter, regParam):
     pipeline = Pipeline(stages=[c9_indexer, c17_indexer, c20_indexer, encoder1,
         encoder2, encoder3, assembler, lr])
 
-    model = pipeline.fit(df)
-    # predictions = model.transform(validation)
+    model = pipeline.fit(training)
+    predictions = model.transform(validation)
 
-    return model
+    testError = predictions.select("label", "prediction").filter(predictions["label"] != predictions["prediction"]).count() / predictions.count()
+
+    return testError, model
 
 
 def evaluate(model, testRDD):
     testDF = spark.createDataFrame(testRDD, FIELDS[1:])
     predictions = model.transform(testDF)
 
-    predictions
+    return predictions.select("prediction").collect()
 
 if __name__ == '__main__':
     output = 'gs://w261-final-project-team-8/results/'
-    predictionsFile = 'gs://w261-final-project-team-8/predictions'
-    ctrTrain = sc.textFile('gs://w261-final-project-team-8/data/sample_train.txt')
-    ctrTest = sc.textFile('gs://w261-final-project-team-8/data/sample_test.txt')
+    ctrTrain = sc.textFile('gs://w261-final-project-team-8/data/train.txt')
+    ctrTest = sc.textFile('gs://w261-final-project-team-8/data/test.txt')
 
-    nIter = 10
+    nIter = 5
     regParam = 0.01
 
     start = time.time()
     graphRDD = initGraph(ctrTrain, 'train')
     testRDD = initGraph(ctrTest, 'test')
 
-    model = runCTR(graphRDD, nIter, regParam)
+    testError, model = runCTR(graphRDD, nIter, regParam)
+
+    print(f'...trained {nIter} iterations in {time.time() - start} seconds.')
 
     model.write().overwrite().save(output)
     predictions = evaluate(model, testRDD)
 
-    with open(predictionsFile, 'w+') as f:
-        f.write(predictions)
+    print(f'Test Error on 75-25 split: {testError}')
 
+    print(predictions)
