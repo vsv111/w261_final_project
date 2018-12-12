@@ -5,7 +5,7 @@ import time
 import numpy as np
 import pandas as pd
 from pyspark.ml.linalg import Vectors
-from pyspark.ml.feature import StringIndexer, OneHotEncoderEstimator, VectorAssembler
+from pyspark.ml.feature import StringIndexer, OneHotEncoder, VectorAssembler
 from pyspark.ml.classification import LogisticRegression
 from pyspark.ml import Pipeline
 
@@ -20,6 +20,9 @@ spark = SparkSession\
         .getOrCreate()
 sc = spark.sparkContext
 
+FIELDS = ["label","I1","I2","I3","I4","I5","I6","I7","I8","I9","I10","I11","I12","I13", \
+          "C1","C2","C3","C4","C5","C6","C7","C8","C9","C10","C11","C12","C13","C14","C15", \
+          "C16","C17","C18","C19","C20","C21","C22","C23","C24","C25","C26"]
 
 # Parse the data, handle missing values and return an array of label & features
 def parseDataPoint(line):
@@ -43,8 +46,31 @@ def parseDataPoint(line):
 
     return features
 
-def initGraph(dataRDD):
-    graphRDD = dataRDD.map(parseDataPoint).cache()
+def parseTestDataPoint(line):
+    values = line.replace('\n', '').split('\t')
+    features = []
+
+    # Replace missing integer features with 0.0
+    for f in values[0:13]:
+        if f == '':
+            features.append(0.0)
+        else:
+            features.append(float(f))
+
+    # Replace missing categorical features with new value 'missing'
+    for f in values[13:]:
+        if f == '':
+            features.append('missing')
+        else:
+            features.append(f)
+
+    return features
+
+def initGraph(dataRDD, typ):
+    if typ == 'train':
+        graphRDD = dataRDD.map(parseDataPoint).cache()
+    else:
+        graphRDD = dataRDD.map(parseTestDataPoint).cache()
 
     return graphRDD
 
@@ -54,9 +80,6 @@ def runCTR(initRDD, maxIter, regParam):
     Args:
 
     """
-    FIELDS = ["label","I1","I2","I3","I4","I5","I6","I7","I8","I9","I10","I11","I12","I13", \
-              "C1","C2","C3","C4","C5","C6","C7","C8","C9","C10","C11","C12","C13","C14","C15", \
-              "C16","C17","C18","C19","C20","C21","C22","C23","C24","C25","C26"]
     SEED = 42
     df = spark.createDataFrame(initRDD, FIELDS)
     # training, validation = df.randomSplit([0.75, 0.25], SEED)
@@ -65,8 +88,9 @@ def runCTR(initRDD, maxIter, regParam):
     c17_indexer = StringIndexer(inputCol="C17", outputCol="C17Indexed")
     c20_indexer = StringIndexer(inputCol="C20", outputCol="C20Indexed")
 
-    encoder = OneHotEncoderEstimator(inputCols=["C9Indexed", "C17Indexed", "C20Indexed"],
-                                     outputCols=["C9Encoded", "C17Encoded", "C20Encoded"])
+    encoder1 = OneHotEncoder(inputCol="C9Indexed", outputCol="C9Encoded")
+    encoder2 = OneHotEncoder(inputCol="C17Indexed", outputCol="C17Encoded")
+    encoder3 = OneHotEncoder(inputCol="C20Indexed", outputCol="C20Encoded")
 
     assembler = VectorAssembler(inputCols=["I1", "I2", "I3", "I4", "I5", "I6", "I7", "I8", "I9", "I10", "I11", \
                                            "I12", "I13", "C9Encoded", "C17Encoded", "C20Encoded"],
@@ -74,33 +98,39 @@ def runCTR(initRDD, maxIter, regParam):
 
     lr = LogisticRegression(maxIter=maxIter, regParam=regParam)
 
-    pipeline = Pipeline(stages=[c9_indexer, c17_indexer, c20_indexer, encoder, assembler, lr])
+    pipeline = Pipeline(stages=[c9_indexer, c17_indexer, c20_indexer, encoder1,
+        encoder2, encoder3, assembler, lr])
 
-    model = pipeline.fit(training)
+    model = pipeline.fit(df)
     # predictions = model.transform(validation)
 
     return model
 
 
 def evaluate(model, testRDD):
-    predictions = transform(testRDD)
+    testDF = spark.createDataFrame(testRDD, FIELDS[1:])
+    predictions = model.transform(testDF)
 
-    testErr = predictions.select("label", "prediction").filter(predictions["label"] != predictions["prediction"]).count() / predictions.count()
-    return testErr
+    predictions
 
 if __name__ == '__main__':
-    output = 'gs://rutika-banakar-w261-hw-5/data/wiki_graph_output.txt'
-    ctrTrain = sc.textFile('gs://rutika-banakar-w261-hw-5/data/wiki_graph.txt')
-    ctrTest = sc.textFile('gs://')
+    output = 'gs://w261-final-project-team-8/results/'
+    predictionsFile = 'gs://w261-final-project-team-8/predictions'
+    ctrTrain = sc.textFile('gs://w261-final-project-team-8/data/sample_train.txt')
+    ctrTest = sc.textFile('gs://w261-final-project-team-8/data/sample_test.txt')
 
     nIter = 10
     regParam = 0.01
 
     start = time.time()
-    graphRDD = initGraph(ctrTrain)
-    testRDD = initGraph(ctrTest)
+    graphRDD = initGraph(ctrTrain, 'train')
+    testRDD = initGraph(ctrTest, 'test')
 
     model = runCTR(graphRDD, nIter, regParam)
 
-    model.save(output)
-    results = evaluate(model, testRDD)
+    model.write().overwrite().save(output)
+    predictions = evaluate(model, testRDD)
+
+    with open(predictionsFile, 'w+') as f:
+        f.write(predictions)
+
