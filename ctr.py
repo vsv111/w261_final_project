@@ -77,15 +77,16 @@ def runCTR(initRDD, maxIter, regParam):
     pipeline = Pipeline(stages=[c9_indexer, c17_indexer, c20_indexer, encoder, assembler, lr])
 
     model = pipeline.fit(training)
-    predictions = model.transform(validation)
+    # predictions = model.transform(validation)
 
     return model
 
 
 def evaluate(model, testRDD):
-    # labelsAndPreds = 
-    pass
+    predictions = transform(testRDD)
 
+    testErr = predictions.select("label", "prediction").filter(predictions["label"] != predictions["prediction"]).count() / predictions.count()
+    return testErr
 
 if __name__ == '__main__':
     output = 'gs://rutika-banakar-w261-hw-5/data/wiki_graph_output.txt'
